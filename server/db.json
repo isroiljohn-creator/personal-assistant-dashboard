@@ -1,0 +1,35 @@
+{
+  "tasks": [
+    {
+      "id": 1776079693494,
+      "title": "Dars",
+      "project": "General",
+      "priority": "medium",
+      "status": "todo",
+      "due": "2026-04-14 11:00",
+      "nextAction": "Keyingi qadam kiritilmagan",
+      "overdue": false
+    }
+  ],
+  "transactions": [],
+  "wallets": [
+    {
+      "id": 1,
+      "name": "Visa USD",
+      "balance": 0,
+      "currency": "USD"
+    },
+    {
+      "id": 2,
+      "name": "TBC Humo",
+      "balance": 0,
+      "currency": "UZS"
+    },
+    {
+      "id": 3,
+      "name": "Naqd",
+      "balance": 0,
+      "currency": "UZS"
+    }
+  ]
+}
