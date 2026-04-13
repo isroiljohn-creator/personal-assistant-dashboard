@@ -218,7 +218,7 @@ bot.on('message', async (msg) => {
 });
 
 // Catch-all: serve React app for any non-API route (in production)
-app.get('*', (req, res) => {
+app.get('/{*splat}', (req, res) => {
   const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
