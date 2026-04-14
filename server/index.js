@@ -96,126 +96,265 @@ Qaytarishingiz kerak bo'lgan strict JSON strukturasi (faqat JSON qaytaring, bosh
 }`;
 
 // TELEGRAM BOT
-const token = '8760915981:AAEHJMWgg8afVyfo4fHSVDexWhhjYwfqU6s';
+const token = process.env.TELEGRAM_BOT_TOKEN || '8760915981:AAEHJMWgg8afVyfo4fHSVDexWhhjYwfqU6s';
 const bot = new TelegramBot(token, { polling: true });
 
+
+// Helper: single task -> beautiful card text
+function formatTaskCard(task, index) {
+  const priorityEmoji = { high: '🔴', medium: '🟡', low: '🟢' };
+  const statusLabel = { todo: 'Bajarilmagan', in_progress: '🔄 Jarayonda', done: '✅ Tugagan' };
+  const overdueLine = (task.overdue && task.status !== 'done') ? '\n⚠️ *KECHIKGAN!*' : '';
+  return (
+    `${priorityEmoji[task.priority] || '🟡'} *${index}. ${task.title}*${overdueLine}\n` +
+    `📁 ${task.project}  •  ${statusLabel[task.status] || 'Bajarilmagan'}\n` +
+    `⏰ ${task.due || "Deadline yo'q"}`
+  );
+}
+
+// Helper: send tasks as individual cards with buttons
+async function sendTaskCards(chatId, tasks) {
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    const text = formatTaskCard(task, i + 1);
+    const keyboard = {
+      inline_keyboard: [[
+        { text: '✅ Bajarildi', callback_data: `done_${task.id}` },
+        { text: '🔄 Jarayonda', callback_data: `prog_${task.id}` },
+      ]]
+    };
+    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: keyboard });
+  }
+}
+
+// /start
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+    `👋 *Assalomu alaykum\\!*\n\n` +
+    `Shaxsiy assistent hizmatda 🤖\n\n` +
+    `📋 /tasks — Ochiq vazifalar\n` +
+    `✅ /done — Tugagan vazifalar\n` +
+    `💰 /finance — Moliya holati\n\n` +
+    `_Xabar yozing yoki ovoz yuboring!_`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// /tasks — har bir vazifa ALOHIDA card sifatida
+bot.onText(/\/tasks/, async (msg) => {
+  const chatId = msg.chat.id;
+  const db = loadDB();
+  const openTasks = db.tasks.filter(t => t.status !== 'done');
+
+  if (openTasks.length === 0) {
+    return bot.sendMessage(chatId, '🎉 Barcha vazifalar bajarilgan! Zo\'r!');
+  }
+
+  await bot.sendMessage(chatId, `📋 *Ochiq vazifalar — ${openTasks.length} ta:*`, { parse_mode: 'Markdown' });
+  await sendTaskCards(chatId, openTasks);
+});
+
+// /done — tugagan vazifalar
+bot.onText(/\/done/, async (msg) => {
+  const chatId = msg.chat.id;
+  const db = loadDB();
+  const doneTasks = db.tasks.filter(t => t.status === 'done');
+
+  if (doneTasks.length === 0) {
+    return bot.sendMessage(chatId, 'Hali hech qanday vazifa tugallanmagan.');
+  }
+
+  await bot.sendMessage(chatId, `✅ *Tugagan vazifalar — ${doneTasks.length} ta:*`, { parse_mode: 'Markdown' });
+  for (const task of doneTasks) {
+    await bot.sendMessage(
+      chatId,
+      `✅ *${task.title}*\n📁 ${task.project}  •  ⏰ ${task.due || '—'}`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: [[{ text: '↩️ Qaytarish', callback_data: `undo_${task.id}` }]] }
+      }
+    );
+  }
+});
+
+// /finance — bugungi moliya
+bot.onText(/\/finance/, (msg) => {
+  const chatId = msg.chat.id;
+  const db = loadDB();
+  const today = new Date().toISOString().split('T')[0];
+  const todayTx = db.transactions.filter(t => t.date === today);
+  const fmt = n => new Intl.NumberFormat('ru-RU').format(n);
+
+  if (todayTx.length === 0) {
+    return bot.sendMessage(chatId,
+      `💰 *Bugungi tranzaksiyalar yo'q*\n\n_Xarajat qo'shish uchun: "Tushlikka 25000 so'm sarfladim" deb yozing_`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  let text = `💰 *Bugungi tranzaksiyalar:*\n\n`;
+  todayTx.forEach(tx => {
+    const sign = tx.type === 'income' ? '➕' : '➖';
+    text += `${sign} *${tx.title}*\n   ${fmt(tx.amount)} ${tx.currency === 'UZS' ? "so'm" : '$'}  —  _${tx.category}_\n\n`;
+  });
+  bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+});
+
+// Inline button callbacks (✅ Bajarildi, 🔄 Jarayonda, ↩️ Qaytarish)
+bot.on('callback_query', async (query) => {
+  const { data, message } = query;
+  const chatId = message.chat.id;
+  const msgId = message.message_id;
+  const db = loadDB();
+
+  if (data.startsWith('done_')) {
+    const task = db.tasks.find(t => t.id === parseInt(data.slice(5)));
+    if (task) {
+      task.status = 'done'; task.overdue = false;
+      saveDB(db);
+      await bot.answerCallbackQuery(query.id, { text: '✅ Bajarildi!' });
+      await bot.editMessageText(
+        `✅ *${task.title}* — bajarildi!`,
+        { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }
+      );
+    }
+  } else if (data.startsWith('prog_')) {
+    const task = db.tasks.find(t => t.id === parseInt(data.slice(5)));
+    if (task) {
+      task.status = 'in_progress';
+      saveDB(db);
+      await bot.answerCallbackQuery(query.id, { text: '🔄 Jarayonda!' });
+      await bot.editMessageText(
+        formatTaskCard(task, '→'),
+        {
+          chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[
+            { text: '✅ Bajarildi', callback_data: `done_${task.id}` },
+            { text: '🔄 Jarayonda', callback_data: `prog_${task.id}` },
+          ]]}
+        }
+      );
+    }
+  } else if (data.startsWith('undo_')) {
+    const task = db.tasks.find(t => t.id === parseInt(data.slice(5)));
+    if (task) {
+      task.status = 'todo';
+      saveDB(db);
+      await bot.answerCallbackQuery(query.id, { text: '↩️ Qaytarildi!' });
+      await bot.editMessageText(
+        `↩️ *${task.title}* — qaytarildi`,
+        { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }
+      );
+    }
+  }
+});
+
+// General message handler (AI)
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
-  
-  if (msg.text && msg.text.startsWith('/start')) {
-    return bot.sendMessage(chatId, `Assalomu alaykum! Shaxsiy Assistent hizmatda. Menga ovozli xabar (voice) yoki dildagi gaplaringizni yozib qoldirsangiz tushunib, Groq orqali bajaraman!`);
-  }
-  
-  if (msg.text && msg.text.startsWith('/tasks')) {
-    const db = loadDB();
-    const openTasks = db.tasks.filter(t => t.status !== 'done');
-    if (openTasks.length === 0) return bot.sendMessage(chatId, "Hozircha ochiq vazifalar yo'q!");
-    let text = "📋 Ochiq vazifalar:\n\n";
-    openTasks.forEach((t, i) => {
-      text += `${i+1}. ${t.title}\n   ⏰ Due: ${t.due}\n`;
-    });
-    return bot.sendMessage(chatId, text);
-  }
+  if (msg.text && msg.text.startsWith('/')) return; // skip commands
 
   try {
     bot.sendChatAction(chatId, 'typing');
-    let userText = "";
+    let userText = '';
 
-    // If AUDIO/VOICE message
     if (msg.voice || msg.audio) {
       const fileId = msg.voice ? msg.voice.file_id : msg.audio.file_id;
       const fileLink = await bot.getFileLink(fileId);
-      
       const res = await fetch(fileLink);
       if (!res.ok) throw new Error(`unexpected response ${res.statusText}`);
-      
       const tempPath = path.join(__dirname, `${fileId}.ogg`);
-      // Stream audio to disk
       await pipeline(res.body, fs.createWriteStream(tempPath));
-
-      // Transcribe via Whisper large v3 natively hitting Groq
       const transcription = await groq.audio.transcriptions.create({
         file: fs.createReadStream(tempPath),
-        model: "whisper-large-v3",
-        response_format: "json",
+        model: 'whisper-large-v3',
+        response_format: 'json',
       });
-
       userText = transcription.text;
-      
-      // Cleanup temp audio and inform user we got it
       fs.unlinkSync(tempPath);
-      bot.sendMessage(chatId, `🎤 Ovozli xabar tarjimasi:\n_"${userText}"_`, { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, `🎤 _"${userText}"_`, { parse_mode: 'Markdown' });
     } else if (msg.text) {
       userText = msg.text;
     } else {
-      return bot.sendMessage(chatId, "Kechirasiz, faqat matn yoki ovoz qabul qila olaman.");
+      return bot.sendMessage(chatId, 'Kechirasiz, faqat matn yoki ovoz qabul qila olaman.');
     }
 
-    // Retrieve tasks to give context to the AI
     const dbContext = loadDB();
     const openTasks = dbContext.tasks.filter(t => t.status !== 'done');
-    let tasksContextStr = "Foydalanuvchining joriy ochiq vazifalari ro'yxati (Bu ro'yxat faqat ma'lumot uchun. Agar foydalanuvchi 'Nima ishlarim bor?', 'Qanday rejalar bor?' deb SO'RASA, CHAT xatosiz qaytaring. Lekin agar uning gapida yangi vazifa KUZATILSA, albatta ADD_TASK qiling):\n";
+    let tasksContextStr = "Foydalanuvchining joriy ochiq vazifalari:\n";
     if (openTasks.length === 0) tasksContextStr += "Hech qanday ochiq vazifa yo'q.\n";
-    openTasks.forEach((t, i) => {
-      tasksContextStr += `${i+1}. ${t.title} (Muddat: ${t.due})\n`;
-    });
+    openTasks.forEach((t, i) => { tasksContextStr += `${i+1}. ${t.title} (Muddat: ${t.due})\n`; });
 
-    // Process text intent with LLM
     const completion = await groq.chat.completions.create({
       messages: [
         {
-          role: "system",
+          role: 'system',
           content: `Siz mukammal ishlaydigan aqlli assistent bot liganing miyasisiz (LLama 3.3). Hozirgi raqamli yil: 2026. Xabargingiz qat'iy JSON da bo'lishi shart.\n\n${tasksContextStr}\n\n${JSON_SCHEMA}`
         },
-        {
-          role: "user",
-          content: userText
-        }
+        { role: 'user', content: userText }
       ],
-      model: "llama-3.3-70b-versatile",
-      response_format: { type: "json_object" },
+      model: 'llama-3.3-70b-versatile',
+      response_format: { type: 'json_object' },
     });
 
     const parsed = JSON.parse(completion.choices[0].message.content);
-    
-    // Execute Action on DB
     const db = loadDB();
+
     if (parsed.action === 'ADD_TASK') {
       const newTask = {
         id: Date.now(),
-        title: parsed.data.title || "Nomalum vazifa",
-        project: "General",
-        priority: "medium",
-        status: "todo",
-        due: parsed.data.due || "Deadline yo‘q",
-        nextAction: "Keyingi qadam kiritilmagan",
+        title: parsed.data.title || 'Nomalum vazifa',
+        project: 'General',
+        priority: 'medium',
+        status: 'todo',
+        due: parsed.data.due || "Deadline yo'q",
+        nextAction: 'Keyingi qadam kiritilmagan',
         overdue: false,
       };
       db.tasks.unshift(newTask);
       saveDB(db);
+      // AI reply + new task as card with buttons
+      await bot.sendMessage(chatId, parsed.reply, { parse_mode: 'Markdown' });
+      await bot.sendMessage(chatId, formatTaskCard(newTask, '🆕'), {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: [[
+          { text: '✅ Bajarildi', callback_data: `done_${newTask.id}` },
+          { text: '🔄 Jarayonda', callback_data: `prog_${newTask.id}` },
+        ]]}
+      });
+
     } else if (parsed.action === 'ADD_EXPENSE') {
       const newTx = {
         id: Date.now(),
-        type: "expense",
-        title: parsed.data.title || parsed.data.category || "Xarajat",
-        category: parsed.data.category || "Personal",
+        type: 'expense',
+        title: parsed.data.title || parsed.data.category || 'Xarajat',
+        category: parsed.data.category || 'Personal',
         amount: Number(parsed.data.amount) || 0,
-        currency: "UZS",
+        currency: 'UZS',
         date: new Date().toISOString().split('T')[0],
-        wallet: "Naqd"
+        wallet: 'Naqd',
       };
       db.transactions.unshift(newTx);
       saveDB(db);
+      bot.sendMessage(chatId, parsed.reply, { parse_mode: 'Markdown' });
+
+    } else {
+      // CHAT reply
+      await bot.sendMessage(chatId, parsed.reply, { parse_mode: 'Markdown' });
+      // If user asked about tasks -> auto-show task cards
+      const taskKeywords = ['vazifa', 'task', 'ishlar', 'nima qilish', 'rejalar', 'todo'];
+      if (taskKeywords.some(kw => userText.toLowerCase().includes(kw)) && openTasks.length > 0) {
+        await bot.sendMessage(chatId, `📋 *${openTasks.length} ta ochiq vazifa:*`, { parse_mode: 'Markdown' });
+        await sendTaskCards(chatId, openTasks);
+      }
     }
-    
-    // Reply back
-    bot.sendMessage(chatId, parsed.reply);
 
   } catch (error) {
-    console.error("Groq AI Error:", error);
-    bot.sendMessage(chatId, "AI tizimi xizmatida xatolik yuz berdi. " + error.message);
+    console.error('Bot Error:', error);
+    bot.sendMessage(chatId, 'AI tizimi xizmatida xatolik yuz berdi. ' + error.message);
   }
 });
+
 
 // Catch-all: serve React app for any non-API route (in production)
 app.get('/{*splat}', (req, res) => {
