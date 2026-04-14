@@ -365,7 +365,7 @@ bot.on('message', async (msg) => {
       db.tasks.unshift(newTask);
       saveDB(db);
       // AI reply + new task as card with buttons
-      await bot.sendMessage(chatId, parsed.reply, { parse_mode: 'Markdown' });
+      await bot.sendMessage(chatId, parsed.reply);
       await bot.sendMessage(chatId, formatTaskCard(newTask, '🆕'), {
         parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: [[
@@ -387,11 +387,11 @@ bot.on('message', async (msg) => {
       };
       db.transactions.unshift(newTx);
       saveDB(db);
-      bot.sendMessage(chatId, parsed.reply, { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, parsed.reply);
 
     } else {
-      // CHAT reply
-      await bot.sendMessage(chatId, parsed.reply, { parse_mode: 'Markdown' });
+      // CHAT reply (plain text — AI javoblari markdown buzmaydi)
+      await bot.sendMessage(chatId, parsed.reply);
       // If user asked about tasks -> auto-show task cards
       const taskKeywords = ['vazifa', 'task', 'ishlar', 'nima qilish', 'rejalar', 'todo'];
       if (taskKeywords.some(kw => userText.toLowerCase().includes(kw)) && openTasks.length > 0) {
