@@ -260,13 +260,16 @@ bot.on('message', async (msg) => {
       const fileId = msg.voice ? msg.voice.file_id : msg.audio.file_id;
       // bot.downloadFile() — library ichki yuklovchi, ishonchli
       const localPath = await bot.downloadFile(fileId, __dirname);
+      // Telegram .oga yuboradi, Groq .ogg kerak — rename qilamiz
+      const oggPath = localPath.replace(/\.[^.]+$/, '.ogg');
+      fs.renameSync(localPath, oggPath);
       const transcription = await groq.audio.transcriptions.create({
-        file: fs.createReadStream(localPath),
+        file: fs.createReadStream(oggPath),
         model: 'whisper-large-v3',
         response_format: 'json',
       });
       userText = transcription.text;
-      try { fs.unlinkSync(localPath); } catch (_) {}
+      try { fs.unlinkSync(oggPath); } catch (_) {}
       bot.sendMessage(chatId, `🎤 _"${userText}"_`, { parse_mode: 'Markdown' });
     } else if (msg.text) {
       userText = msg.text;
