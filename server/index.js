@@ -266,6 +266,7 @@ bot.on('message', async (msg) => {
       const transcription = await groq.audio.transcriptions.create({
         file: fs.createReadStream(oggPath),
         model: 'whisper-large-v3',
+        language: 'uz',
         response_format: 'json',
       });
       userText = transcription.text;
