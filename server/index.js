@@ -142,7 +142,19 @@ const token = process.env.TELEGRAM_BOT_TOKEN || '8760915981:AAEHJMWgg8afVyfo4fHS
 const bot = new TelegramBot(token, { polling: true });
 
 
-// Helper: single task -> beautiful card text
+// Dashboard URL
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://personal-assistant-dashboard-production.up.railway.app';
+
+// Helper: single task -> one line for combined list
+function formatTaskLine(task, index) {
+  const pri = { high: '🔴', medium: '🟡', low: '🟢' };
+  const overdue = (task.overdue && task.status !== 'done') ? ' ⚠️' : '';
+  const status = task.status === 'in_progress' ? ' 🔄' : '';
+  const due = task.due && task.due !== "Deadline yo'q" ? `⏰ ${task.due}` : '📭 Deadline yo\'q';
+  return `${pri[task.priority] || '🟡'} *${index}. ${task.title}*${overdue}${status}\n   ${due}`;
+}
+
+// Helper: single task card for new task notification (with buttons)
 function formatTaskCard(task, index) {
   const priorityEmoji = { high: '🔴', medium: '🟡', low: '🟢' };
   const statusLabel = { todo: 'Bajarilmagan', in_progress: '🔄 Jarayonda', done: '✅ Tugagan' };
@@ -154,19 +166,21 @@ function formatTaskCard(task, index) {
   );
 }
 
-// Helper: send tasks as individual cards with buttons
-async function sendTaskCards(chatId, tasks) {
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks[i];
-    const text = formatTaskCard(task, i + 1);
-    const keyboard = {
-      inline_keyboard: [[
-        { text: '✅ Bajarildi', callback_data: `done_${task.id}` },
-        { text: '🔄 Jarayonda', callback_data: `prog_${task.id}` },
-      ]]
-    };
-    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: keyboard });
+// Helper: ALL tasks in ONE message + dashboard button
+async function sendTaskList(chatId, tasks, headerText) {
+  if (tasks.length === 0) {
+    return bot.sendMessage(chatId, '🎉 Hozircha ochiq vazifalar yo\'q!');
   }
+  const lines = tasks.map((t, i) => formatTaskLine(t, i + 1)).join('\n\n');
+  const text = `${headerText}\n\n${lines}`;
+  await bot.sendMessage(chatId, text, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '📊 Dashboardni ochish', web_app: { url: DASHBOARD_URL } }
+      ]]
+    }
+  });
 }
 
 // /start
@@ -182,18 +196,12 @@ bot.onText(/\/start/, (msg) => {
   );
 });
 
-// /tasks — har bir vazifa ALOHIDA card sifatida
+// /tasks — BITTA xabarda barcha ochiq vazifalar
 bot.onText(/\/tasks/, async (msg) => {
   const chatId = msg.chat.id;
   const db = loadDB();
   const openTasks = db.tasks.filter(t => t.status !== 'done');
-
-  if (openTasks.length === 0) {
-    return bot.sendMessage(chatId, '🎉 Barcha vazifalar bajarilgan! Zo\'r!');
-  }
-
-  await bot.sendMessage(chatId, `📋 *Ochiq vazifalar — ${openTasks.length} ta:*`, { parse_mode: 'Markdown' });
-  await sendTaskCards(chatId, openTasks);
+  await sendTaskList(chatId, openTasks, `📋 *Ochiq vazifalar — ${openTasks.length} ta:*`);
 });
 
 // /done — tugagan vazifalar
@@ -201,22 +209,21 @@ bot.onText(/\/done/, async (msg) => {
   const chatId = msg.chat.id;
   const db = loadDB();
   const doneTasks = db.tasks.filter(t => t.status === 'done');
-
   if (doneTasks.length === 0) {
     return bot.sendMessage(chatId, 'Hali hech qanday vazifa tugallanmagan.');
   }
-
-  await bot.sendMessage(chatId, `✅ *Tugagan vazifalar — ${doneTasks.length} ta:*`, { parse_mode: 'Markdown' });
-  for (const task of doneTasks) {
-    await bot.sendMessage(
-      chatId,
-      `✅ *${task.title}*\n📁 ${task.project}  •  ⏰ ${task.due || '—'}`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: [[{ text: '↩️ Qaytarish', callback_data: `undo_${task.id}` }]] }
+  const lines = doneTasks.map((t, i) => `✅ *${i+1}. ${t.title}*\n   ⏰ ${t.due || '—'}`).join('\n\n');
+  await bot.sendMessage(chatId,
+    `✅ *Tugagan vazifalar — ${doneTasks.length} ta:*\n\n${lines}`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '📊 Dashboardni ochish', web_app: { url: DASHBOARD_URL } }
+        ]]
       }
-    );
-  }
+    }
+  );
 });
 
 // /finance — bugungi moliya
@@ -392,11 +399,10 @@ bot.on('message', async (msg) => {
     } else {
       // CHAT reply (plain text — AI javoblari markdown buzmaydi)
       await bot.sendMessage(chatId, parsed.reply);
-      // If user asked about tasks -> auto-show task cards
-      const taskKeywords = ['vazifa', 'task', 'ishlar', 'nima qilish', 'rejalar', 'todo'];
+      // If user asked about tasks -> auto-show ONE combined message
+      const taskKeywords = ['vazifa', 'task', 'ishlar', 'nima qilish', 'rejalar', 'todo', 'deadline', 'reja', 'rejam', 'ishim'];
       if (taskKeywords.some(kw => userText.toLowerCase().includes(kw)) && openTasks.length > 0) {
-        await bot.sendMessage(chatId, `📋 *${openTasks.length} ta ochiq vazifa:*`, { parse_mode: 'Markdown' });
-        await sendTaskCards(chatId, openTasks);
+        await sendTaskList(chatId, openTasks, `📋 *Sizning ${openTasks.length} ta ochiq vazifangiz:*`);
       }
     }
 
