@@ -322,11 +322,25 @@ bot.on('message', async (msg) => {
     if (openTasks.length === 0) tasksContextStr += "Hech qanday ochiq vazifa yo'q.\n";
     openTasks.forEach((t, i) => { tasksContextStr += `${i+1}. ${t.title} (Muddat: ${t.due})\n`; });
 
+    // Toshkent vaqti (UTC+5) — AI uchun aniq sana/vaqt
+    const nowTZ = new Date(Date.now() + 5 * 60 * 60 * 1000);
+    const pad = n => String(n).padStart(2, '0');
+    const todayStr = `${nowTZ.getUTCFullYear()}-${pad(nowTZ.getUTCMonth()+1)}-${pad(nowTZ.getUTCDate())}`;
+    const timeStr  = `${pad(nowTZ.getUTCHours())}:${pad(nowTZ.getUTCMinutes())}`;
+    const weekDays = ['Yakshanba','Dushanba','Seshanba','Chorshanba','Payshanba','Juma','Shanba'];
+    const dayName  = weekDays[nowTZ.getUTCDay()];
+
     const completion = await groq.chat.completions.create({
       messages: [
         {
           role: 'system',
-          content: `Siz mukammal ishlaydigan aqlli assistent bot liganing miyasisiz (LLama 3.3). Hozirgi raqamli yil: 2026. Xabargingiz qat'iy JSON da bo'lishi shart.\n\n${tasksContextStr}\n\n${JSON_SCHEMA}`
+          content: `Siz mukammal ishlaydigan aqlli shaxsiy assistent bo'tsiz (LLama 3.3). Xabargingiz qat'iy JSON da bo'lishi shart.\n\n` +
+            `🕐 HOZIRGI VAQT: ${todayStr} ${timeStr} (Toshkent, UTC+5), ${dayName}\n` +
+            `"Bugun" = ${todayStr}, "Ertaga" = keyingi kun, "Indinga" = ikki kun keyin.\n` +
+            `Vaqt hisoblashda AYNAN shu sanani asos qiling. Masalan: agar foydalanuvchi "ertaga soat 15:00" desa, due = "${
+              (() => { const t = new Date(nowTZ); t.setUTCDate(t.getUTCDate()+1); return `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}`; })()
+            } 15:00" bo'lishi kerak.\n\n` +
+            `${tasksContextStr}\n\n${JSON_SCHEMA}`
         },
         { role: 'user', content: userText }
       ],
