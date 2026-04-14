@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import TelegramBot from 'node-telegram-bot-api';
+import fetch from 'node-fetch';
+import FormData from 'form-data';
 import dotenv from 'dotenv';
 import Groq from 'groq-sdk';
 
@@ -92,6 +94,48 @@ Qaytarishingiz kerak bo'lgan strict JSON strukturasi (faqat JSON qaytaring, bosh
   },
   "reply": "Telegram dagi foydalanuvchiga yuboriladigan chiroyli qisqa o'zbek tilidagi javobingiz. Xarajat kiritildi deb masalan."
 }`;
+
+// AISHA STT
+const AISHA_API_KEY = process.env.AISHA_API_KEY || 'INhaFMlH.sEw75tbo0zFHdl9xcI1JIZSH1CWE4Gf4';
+
+async function transcribeWithAisha(filePath) {
+  // 1. Faylni yuborish
+  const form = new FormData();
+  form.append('audio', fs.createReadStream(filePath));
+  form.append('language', 'uz');
+  form.append('has_diarization', 'false');
+
+  const postRes = await fetch('https://back.aisha.group/api/v2/stt/post/', {
+    method: 'POST',
+    headers: { 'x-api-key': AISHA_API_KEY, ...form.getHeaders() },
+    body: form,
+  });
+  if (!postRes.ok) {
+    const err = await postRes.text();
+    throw new Error(`AISHA POST xatosi: ${postRes.status} ${err}`);
+  }
+  const postData = await postRes.json();
+  const taskId = postData.id || postData.task_id;
+  if (!taskId) throw new Error('AISHA: task ID qaytmadi');
+
+  // 2. Natijani polling — max 30 soniya
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const getRes = await fetch(`https://back.aisha.group/api/v2/stt/get/${taskId}/`, {
+      headers: { 'x-api-key': AISHA_API_KEY },
+    });
+    if (!getRes.ok) continue;
+    const getData = await getRes.json();
+    const status = getData.status || getData.state;
+    if (status === 'done' || status === 'completed' || status === 'SUCCESS') {
+      return getData.result || getData.text || getData.transcript || JSON.stringify(getData);
+    }
+    if (status === 'failed' || status === 'FAILURE') {
+      throw new Error('AISHA: audio qayta ishlashda xatolik');
+    }
+  }
+  throw new Error('AISHA: vaqt tugadi (30 soniya)');
+}
 
 // TELEGRAM BOT
 const token = process.env.TELEGRAM_BOT_TOKEN || '8760915981:AAEHJMWgg8afVyfo4fHSVDexWhhjYwfqU6s';
@@ -258,19 +302,13 @@ bot.on('message', async (msg) => {
 
     if (msg.voice || msg.audio) {
       const fileId = msg.voice ? msg.voice.file_id : msg.audio.file_id;
-      // bot.downloadFile() — library ichki yuklovchi, ishonchli
       const localPath = await bot.downloadFile(fileId, __dirname);
-      // Telegram .oga yuboradi, Groq .ogg kerak — rename qilamiz
-      const oggPath = localPath.replace(/\.[^.]+$/, '.ogg');
-      fs.renameSync(localPath, oggPath);
-      const transcription = await groq.audio.transcriptions.create({
-        file: fs.createReadStream(oggPath),
-        model: 'whisper-large-v3',
-        language: 'uz',
-        response_format: 'json',
-      });
-      userText = transcription.text;
-      try { fs.unlinkSync(oggPath); } catch (_) {}
+      try {
+        // AISHA STT — O'zbek tili uchun
+        userText = await transcribeWithAisha(localPath);
+      } finally {
+        try { fs.unlinkSync(localPath); } catch (_) {}
+      }
       bot.sendMessage(chatId, `🎤 _"${userText}"_`, { parse_mode: 'Markdown' });
     } else if (msg.text) {
       userText = msg.text;
