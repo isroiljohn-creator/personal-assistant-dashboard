@@ -4,10 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import TelegramBot from 'node-telegram-bot-api';
-import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import Groq from 'groq-sdk';
-import { pipeline } from 'stream/promises';
 
 dotenv.config();
 
@@ -260,18 +258,15 @@ bot.on('message', async (msg) => {
 
     if (msg.voice || msg.audio) {
       const fileId = msg.voice ? msg.voice.file_id : msg.audio.file_id;
-      const fileLink = await bot.getFileLink(fileId);
-      const res = await fetch(fileLink);
-      if (!res.ok) throw new Error(`unexpected response ${res.statusText}`);
-      const tempPath = path.join(__dirname, `${fileId}.ogg`);
-      await pipeline(res.body, fs.createWriteStream(tempPath));
+      // bot.downloadFile() — library ichki yuklovchi, ishonchli
+      const localPath = await bot.downloadFile(fileId, __dirname);
       const transcription = await groq.audio.transcriptions.create({
-        file: fs.createReadStream(tempPath),
+        file: fs.createReadStream(localPath),
         model: 'whisper-large-v3',
         response_format: 'json',
       });
       userText = transcription.text;
-      fs.unlinkSync(tempPath);
+      try { fs.unlinkSync(localPath); } catch (_) {}
       bot.sendMessage(chatId, `🎤 _"${userText}"_`, { parse_mode: 'Markdown' });
     } else if (msg.text) {
       userText = msg.text;
