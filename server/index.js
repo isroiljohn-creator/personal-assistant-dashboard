@@ -76,16 +76,23 @@ app.post('/api/transactions', (req, res) => {
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const JSON_SCHEMA = `
-Quyidagi strict JSON formatida javob ber (boshqa hech narsa yozma):
+MUHIM QOIDALAR - action tanlashda adashmang:
+- ADD_EXPENSE = pul SARFLANDI, XARAJAT qilindi: "obed qildim", "taksi oldim", "sotib oldim", "to'ladim", "sarfladim", "yedim", "ichim", "kiyim oldim"
+- ADD_INCOME = pul KELDI, DAROMAD: "maosh keldi", "pul o'tkazildi", "freelance to'lov", "sovga pul"
+- ADD_TASK = vazifa, ish, uchrashuv, seminar, deadline
+- CHAT = savol, so'rov, moliya/vazifa haqida ma'lumot olish
+
+Faqat JSON formatida (boshqa narsa yozma):
+
 {
   "action": "Bir tanlang: ADD_TASK (yangi ish/vazifa qo'shish), ADD_EXPENSE (xarajat/chiqim/sarflash/sotib olish), ADD_INCOME (kirim/daromad/maosh/pul keldi/tushum), CHAT (savol-javob, moliya holati, vazifalar haqida so'rov)",
   "data": {
     "title": "Vazifa yoki tranzaksiya nomi",
     "due": "Vazifa muddati YYYY-MM-DD HH:MM formatida. Yo'q bo'lsa: Deadline yo'q",
     "amount": "Pul summasi FAQAT raqam (ADD_EXPENSE va ADD_INCOME uchun MAJBURIY)",
-    "category": "Toifa: Maosh/Freelance/Biznes/Sovga (kirim) yoki Oziq-ovqat/Transport/Uy/Sogliq/Talim/Personal (chiqim)"
+    "category": "Toifa: Maosh/Freelance/Biznes/Sovga (kirim) yoki Oziq-ovqat/Transport/Uy/Sogliq/Talim/Kiyim/Personal (chiqim)"
   },
-  "reply": "Foydalanuvchiga qisqa va do'stona o'zbek tilidagi javob (emoji ishlat)."
+  "reply": "Foydalanuvchiga qisqa, do'stona javob. HECH QACHON ADD_TASK, ADD_EXPENSE, ADD_INCOME kabi texnik so'zlarni ishlatma!"
 }`;
 
 // AISHA STT
