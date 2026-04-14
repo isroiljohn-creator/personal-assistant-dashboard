@@ -19,83 +19,134 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Serve React build in production
 const distPath = path.join(__dirname, '..', 'dist');
-if (fs.existsSync(distPath)) {
-  app.use(express.static(distPath));
+if (fs.existsSync(distPath)) app.use(express.static(distPath));
+
+// ============================================================
+// DB: JSONBin.io dan foydalanish (persistent storage)
+// ============================================================
+const JSONBIN_API_KEY = process.env.JSONBIN_API_KEY;
+const JSONBIN_BIN_ID  = process.env.JSONBIN_BIN_ID;
+const USE_JSONBIN = !!(JSONBIN_API_KEY && JSONBIN_BIN_ID);
+
+const EMPTY_DB = () => ({
+  tasks: [],
+  transactions: [],
+  wallets: [
+    { id: 1, name: 'Naqd', balance: 0, currency: 'UZS' },
+    { id: 2, name: 'Karta', balance: 0, currency: 'UZS' },
+  ],
+});
+
+// Ensure local db.json exists
+if (!fs.existsSync(dbPath)) {
+  fs.writeFileSync(dbPath, JSON.stringify(EMPTY_DB(), null, 2));
 }
 
-function loadDB() {
-  const data = fs.readFileSync(dbPath, 'utf-8');
-  return JSON.parse(data);
+async function loadDB() {
+  if (USE_JSONBIN) {
+    try {
+      const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`, {
+        headers: { 'X-Master-Key': JSONBIN_API_KEY },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.record || EMPTY_DB();
+      }
+    } catch (e) {
+      console.error('JSONBin read error:', e.message);
+    }
+  }
+  // Fallback: local file
+  try {
+    return JSON.parse(fs.readFileSync(dbPath, 'utf-8'));
+  } catch {
+    return EMPTY_DB();
+  }
 }
 
-function saveDB(data) {
+async function saveDB(data) {
+  if (USE_JSONBIN) {
+    try {
+      await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`, {
+        method: 'PUT',
+        headers: {
+          'X-Master-Key': JSONBIN_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
+      return;
+    } catch (e) {
+      console.error('JSONBin write error:', e.message);
+    }
+  }
+  // Fallback: local file
   fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
 }
 
-// Toshkent vaqtida bugungi sana (UTC+5)
-function tashkentDate(daysAgo = 0) {
-  const d = new Date(Date.now() + 5 * 60 * 60 * 1000);
-  if (daysAgo) d.setUTCDate(d.getUTCDate() - daysAgo);
-  return d.toISOString().split('T')[0];
-}
+// ============================================================
+// REST APIs
+// ============================================================
+app.get('/api/data', async (req, res) => {
+  res.json(await loadDB());
+});
 
-// REST APIs for Dashboard
-app.get('/api/data', (req, res) => res.json(loadDB()));
-
-app.post('/api/tasks', (req, res) => {
-  const db = loadDB();
+app.post('/api/tasks', async (req, res) => {
+  const db = await loadDB();
   const newTask = { ...req.body, id: Date.now(), status: 'todo', overdue: false };
   db.tasks.unshift(newTask);
-  saveDB(db);
+  await saveDB(db);
   res.json(newTask);
 });
 
-app.patch('/api/tasks/:id/toggle', (req, res) => {
-  const db = loadDB();
+app.patch('/api/tasks/:id/toggle', async (req, res) => {
+  const db = await loadDB();
   const task = db.tasks.find(t => t.id === parseInt(req.params.id));
   if (task) {
     task.status = task.status === 'done' ? 'todo' : 'done';
     task.overdue = false;
-    saveDB(db);
+    await saveDB(db);
     return res.json(task);
   }
   res.status(404).send('Task not found');
 });
 
-app.post('/api/transactions', (req, res) => {
-  const db = loadDB();
+app.post('/api/transactions', async (req, res) => {
+  const db = await loadDB();
   const newTx = { ...req.body, id: Date.now(), amount: Number(req.body.amount) };
   db.transactions.unshift(newTx);
-  saveDB(db);
+  await saveDB(db);
   res.json(newTx);
 });
 
+// ============================================================
 // GROQ
+// ============================================================
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const JSON_SCHEMA = `
 MUHIM QOIDALAR - action tanlashda adashmang:
-- ADD_EXPENSE = pul SARFLANDI, XARAJAT qilindi: "obed qildim", "taksi oldim", "sotib oldim", "to'ladim", "sarfladim", "yedim", "ichim", "kiyim oldim"
-- ADD_INCOME = pul KELDI, DAROMAD: "maosh keldi", "pul o'tkazildi", "freelance to'lov", "sovga pul"
-- ADD_TASK = vazifa, ish, uchrashuv, seminar, deadline
-- CHAT = savol, so'rov, moliya/vazifa haqida ma'lumot olish
+- ADD_EXPENSE = pul SARFLANDI, XARAJAT: "obed qildim", "taksi oldim", "sotib oldim", "to'ladim", "sarfladim", "yedim", "kiyim oldim", "to'lov qildim"
+- ADD_INCOME  = pul KELDI, DAROMAD: "maosh keldi", "oylik tushdi", "pul o'tkazildi", "freelance to'lov", "daromad qildim", "pul oldim"
+- ADD_TASK    = vazifa, ish, uchrashuv, seminar, deadline, eslatma
+- CHAT        = savol, so'rov, ma'lumot olish, holat so'rash
 
-Faqat JSON formatida (boshqa narsa yozma):
-
+Faqat JSON qaytaring (boshqa hech narsa yozma):
 {
-  "action": "Bir tanlang: ADD_TASK (yangi ish/vazifa qo'shish), ADD_EXPENSE (xarajat/chiqim/sarflash/sotib olish), ADD_INCOME (kirim/daromad/maosh/pul keldi/tushum), CHAT (savol-javob, moliya holati, vazifalar haqida so'rov)",
+  "action": "ADD_TASK | ADD_EXPENSE | ADD_INCOME | CHAT",
   "data": {
-    "title": "Vazifa yoki tranzaksiya nomi",
-    "due": "Vazifa muddati YYYY-MM-DD HH:MM formatida. Yo'q bo'lsa: Deadline yo'q",
-    "amount": "Pul summasi FAQAT raqam (ADD_EXPENSE va ADD_INCOME uchun MAJBURIY)",
-    "category": "Toifa: Maosh/Freelance/Biznes/Sovga (kirim) yoki Oziq-ovqat/Transport/Uy/Sogliq/Talim/Kiyim/Personal (chiqim)"
+    "title": "Nomi (Obed, Taksi, Oylik maosh, va h.k.)",
+    "due": "Faqat ADD_TASK uchun: YYYY-MM-DD HH:MM. Boshqalar: Deadline yo'q",
+    "amount": "Faqat raqam (ADD_EXPENSE va ADD_INCOME uchun MAJBURIY)",
+    "category": "ADD_EXPENSE: Oziq-ovqat|Transport|Uy|Sogliq|Talim|Kiyim|Personal. ADD_INCOME: Maosh|Freelance|Biznes|Sovga|Boshqa"
   },
-  "reply": "Foydalanuvchiga qisqa, do'stona javob. HECH QACHON ADD_TASK, ADD_EXPENSE, ADD_INCOME kabi texnik so'zlarni ishlatma!"
+  "reply": "Qisqa, do'stona javob. HECH QACHON ADD_TASK, ADD_EXPENSE, ADD_INCOME texnik so'zlarni ishlatma!"
 }`;
 
+// ============================================================
 // AISHA STT
+// ============================================================
 const AISHA_API_KEY = process.env.AISHA_API_KEY || 'INhaFMlH.sEw75tbo0zFHdl9xcI1JIZSH1CWE4Gf4';
 
 async function transcribeWithAisha(filePath) {
@@ -109,12 +160,10 @@ async function transcribeWithAisha(filePath) {
     headers: { 'x-api-key': AISHA_API_KEY, ...form.getHeaders() },
     body: form,
   });
-  if (!postRes.ok) {
-    const err = await postRes.text();
-    throw new Error(`AISHA POST xatosi: ${postRes.status} ${err}`);
-  }
-  const postData = await postRes.json();
-  const taskId = postData.id || postData.task_id;
+  if (!postRes.ok) throw new Error(`AISHA POST xatosi: ${postRes.status} ${await postRes.text()}`);
+
+  const { id, task_id } = await postRes.json();
+  const taskId = id || task_id;
   if (!taskId) throw new Error('AISHA: task ID qaytmadi');
 
   for (let i = 0; i < 15; i++) {
@@ -123,19 +172,19 @@ async function transcribeWithAisha(filePath) {
       headers: { 'x-api-key': AISHA_API_KEY },
     });
     if (!getRes.ok) continue;
-    const getData = await getRes.json();
-    const status = getData.status || getData.state;
-    if (status === 'done' || status === 'completed' || status === 'SUCCESS') {
-      return getData.result || getData.text || getData.transcript || JSON.stringify(getData);
-    }
-    if (status === 'failed' || status === 'FAILURE') {
+    const data = await getRes.json();
+    const status = data.status || data.state;
+    if (['done', 'completed', 'SUCCESS'].includes(status))
+      return data.result || data.text || data.transcript || JSON.stringify(data);
+    if (['failed', 'FAILURE'].includes(status))
       throw new Error('AISHA: audio qayta ishlashda xatolik');
-    }
   }
   throw new Error('AISHA: vaqt tugadi (30 soniya)');
 }
 
+// ============================================================
 // TELEGRAM BOT
+// ============================================================
 const token = process.env.TELEGRAM_BOT_TOKEN || '8760915981:AAEHJMWgg8afVyfo4fHSVDexWhhjYwfqU6s';
 const bot = new TelegramBot(token, { polling: true });
 
@@ -143,26 +192,30 @@ const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://personal-assistant-d
 const DASHBOARD_BTN = { inline_keyboard: [[{ text: '📊 Dashboardni ochish', web_app: { url: DASHBOARD_URL } }]] };
 const fmt = n => new Intl.NumberFormat('ru-RU').format(Number(n) || 0);
 
-// ==== TASK HELPERS ====
+function tashkentDate(daysAgo = 0) {
+  const d = new Date(Date.now() + 5 * 60 * 60 * 1000);
+  if (daysAgo) d.setUTCDate(d.getUTCDate() - daysAgo);
+  return d.toISOString().split('T')[0];
+}
+
+// ---- Task helpers ----
 function formatTaskLine(task, index) {
   const pri = { high: '🔴', medium: '🟡', low: '🟢' };
-  const overdue = (task.overdue && task.status !== 'done') ? ' ⚠️' : '';
-  const inprog  = task.status === 'in_progress' ? ' 🔄' : '';
+  const ov  = (task.overdue && task.status !== 'done') ? ' ⚠️' : '';
+  const ip  = task.status === 'in_progress' ? ' 🔄' : '';
   const due = task.due && task.due !== "Deadline yo'q" ? `⏰ ${task.due}` : "📭 Deadline yo'q";
-  return `${pri[task.priority] || '🟡'} *${index}. ${task.title}*${overdue}${inprog}\n   ${due}`;
+  return `${pri[task.priority] || '🟡'} *${index}. ${task.title}*${ov}${ip}\n   ${due}`;
 }
 
 function formatTaskCard(task, index) {
   const pri = { high: '🔴', medium: '🟡', low: '🟢' };
   const st  = { todo: 'Bajarilmagan', in_progress: '🔄 Jarayonda', done: '✅ Tugagan' };
   const ov  = (task.overdue && task.status !== 'done') ? '\n⚠️ *KECHIKGAN!*' : '';
-  return `${pri[task.priority] || '🟡'} *${index}. ${task.title}*${ov}\n📁 ${task.project}  •  ${st[task.status] || 'Bajarilmagan'}\n⏰ ${task.due || "Deadline yo'q"}`;
+  return `${pri[task.priority] || '🟡'} *${index}. ${task.title}*${ov}\n📁 ${task.project}  •  ${st[task.status] || task.status}\n⏰ ${task.due || "Deadline yo'q"}`;
 }
 
 async function sendTaskList(chatId, tasks, header) {
-  if (tasks.length === 0) {
-    return bot.sendMessage(chatId, "🎉 Hozircha ochiq vazifalar yo'q!");
-  }
+  if (tasks.length === 0) return bot.sendMessage(chatId, "🎉 Hozircha ochiq vazifalar yo'q!");
   const lines = tasks.map((t, i) => formatTaskLine(t, i + 1)).join('\n\n');
   await bot.sendMessage(chatId, `${header}\n\n${lines}`, {
     parse_mode: 'Markdown',
@@ -170,100 +223,85 @@ async function sendTaskList(chatId, tasks, header) {
   });
 }
 
-// ==== FINANCE HELPERS ====
-function groupByCategory(txList) {
-  return txList.reduce((acc, tx) => {
-    const cat = tx.category || 'Boshqa';
-    acc[cat] = (acc[cat] || 0) + (Number(tx.amount) || 0);
+// ---- Finance helpers ----
+function groupByCategory(list) {
+  return list.reduce((acc, tx) => {
+    const c = tx.category || 'Boshqa';
+    acc[c] = (acc[c] || 0) + (Number(tx.amount) || 0);
     return acc;
   }, {});
 }
 
 function barChart(amount, total) {
-  const pct = total > 0 ? Math.round((amount / total) * 10) : 0;
-  return '█'.repeat(pct) + '░'.repeat(10 - pct);
+  const n = total > 0 ? Math.round((amount / total) * 10) : 0;
+  return '█'.repeat(n) + '░'.repeat(10 - n);
 }
 
-function sendFinanceSummary(chatId) {
-  const db = loadDB();
+async function sendFinanceSummary(chatId) {
+  const db = await loadDB();
   const cutoff = tashkentDate(30);
-  const recentTx = db.transactions.filter(t => t.date >= cutoff);
+  const recent = db.transactions.filter(t => t.date >= cutoff);
 
-  if (recentTx.length === 0) {
+  if (recent.length === 0) {
     return bot.sendMessage(chatId,
       "💰 So'nggi 30 kunda hech qanday tranzaksiya topilmadi.\n\n" +
-      "Kirim uchun: \"Maoshim 5 million keldi\"\n" +
-      "Chiqim uchun: \"Tushlikka 35 000 so'm sarfladim\""
+      "Kirim: \"Oylik maoshim 5 million keldi\"\n" +
+      "Chiqim: \"Tushlikka 35 000 so'm sarfladim\""
     );
   }
 
-  const income  = recentTx.filter(t => t.type === 'income');
-  const expense = recentTx.filter(t => t.type === 'expense');
+  const income  = recent.filter(t => t.type === 'income');
+  const expense = recent.filter(t => t.type === 'expense');
   const totalIn  = income.reduce((s, t) => s + (Number(t.amount) || 0), 0);
   const totalOut = expense.reduce((s, t) => s + (Number(t.amount) || 0), 0);
   const balance  = totalIn - totalOut;
-  const savingsPct = totalIn > 0 ? Math.round((balance / totalIn) * 100) : 0;
+  const savePct  = totalIn > 0 ? Math.round((balance / totalIn) * 100) : 0;
 
-  // Category breakdowns
   const incCats = groupByCategory(income);
   const expCats = groupByCategory(expense);
 
-  let text = `💰 *So'nggi 30 kunlik moliya hisoboti*\n`;
-  text += `━━━━━━━━━━━━━━━━━━━━\n\n`;
-
-  // Umumiy holat
+  let text = `💰 *So'nggi 30 kunlik moliya hisoboti*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
   text += `📊 *Umumiy holat:*\n`;
   text += `➕ Kirim:    *${fmt(totalIn)} so'm*\n`;
   text += `➖ Chiqim:  *${fmt(totalOut)} so'm*\n`;
   text += `${balance >= 0 ? '📈' : '📉'} Balans:   *${fmt(balance)} so'm*\n`;
-  if (totalIn > 0) {
-    text += `💾 Tejash:  *${savingsPct}%* ${savingsPct >= 20 ? '✅' : savingsPct >= 10 ? '⚠️' : '🔴'}\n`;
-  }
+  if (totalIn > 0)
+    text += `💾 Tejash:  *${savePct}%* ${savePct >= 20 ? '✅' : savePct >= 10 ? '⚠️' : '🔴'}\n`;
   text += '\n';
 
-  // Kirim toifalari
   if (income.length > 0) {
     text += `➕ *Kirim toifalari:*\n`;
-    const sortedIn = Object.entries(incCats).sort((a, b) => b[1] - a[1]);
-    sortedIn.forEach(([cat, amount]) => {
-      const pct = Math.round((amount / totalIn) * 100);
-      text += `  ${barChart(amount, totalIn)} ${cat}\n`;
-      text += `  ${fmt(amount)} so'm (${pct}%)\n`;
+    Object.entries(incCats).sort((a, b) => b[1] - a[1]).forEach(([cat, amt]) => {
+      text += `  ${barChart(amt, totalIn)} ${cat}\n  ${fmt(amt)} so'm (${Math.round(amt / totalIn * 100)}%)\n`;
     });
     text += '\n';
   }
 
-  // Chiqim toifalari
   if (expense.length > 0) {
     text += `➖ *Chiqim toifalari:*\n`;
-    const sortedExp = Object.entries(expCats).sort((a, b) => b[1] - a[1]);
-    sortedExp.forEach(([cat, amount]) => {
-      const pct = Math.round((amount / totalOut) * 100);
-      text += `  ${barChart(amount, totalOut)} ${cat}\n`;
-      text += `  ${fmt(amount)} so'm (${pct}%)\n`;
+    Object.entries(expCats).sort((a, b) => b[1] - a[1]).forEach(([cat, amt]) => {
+      text += `  ${barChart(amt, totalOut)} ${cat}\n  ${fmt(amt)} so'm (${Math.round(amt / totalOut * 100)}%)\n`;
     });
     text += '\n';
   }
 
-  // Aqlli maslahat
-  text += `💡 *Maslahat:*\n`;
+  text += `💡 *Maslahat:* `;
   if (balance < 0) {
-    const topExp = Object.entries(expCats).sort((a, b) => b[1] - a[1])[0];
-    text += `Siz bu oy ${fmt(Math.abs(balance))} so'm zarar ko'rdingiz. `;
-    if (topExp) text += `Eng ko'p xarajat: *${topExp[0]}* (${fmt(topExp[1])} so'm).`;
-  } else if (savingsPct >= 20) {
-    text += `Ajoyib! Daromadingizning ${savingsPct}% ini tejadingiz. 🎉`;
-  } else if (savingsPct >= 10) {
-    text += `Yaxshi holat, lekin tejashni yana oshirishingiz mumkin. Maqsad: 20%.`;
+    const top = Object.entries(expCats).sort((a, b) => b[1] - a[1])[0];
+    text += `Bu oy ${fmt(Math.abs(balance))} so'm zarar.`;
+    if (top) text += ` Eng ko'p xarajat: *${top[0]}* (${fmt(top[1])} so'm).`;
+  } else if (savePct >= 20) {
+    text += `Ajoyib! Daromadingizning ${savePct}% tejadingiz 🎉`;
   } else {
-    text += `Kirimingizning atigi ${savingsPct}% tejaldi. Chiqimlarni kamaytiring!`;
+    text += `Tejash ${savePct}%. Maqsad: 20%.`;
   }
 
   bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: DASHBOARD_BTN });
 }
 
-
-// ==== BOT COMMANDS ====
+// ============================================================
+// BOT COMMANDS
+// ============================================================
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id,
     `👋 *Assalomu alaykum!*\n\nShaxsiy assistent hizmatda 🤖\n\n` +
@@ -276,37 +314,38 @@ bot.onText(/\/start/, (msg) => {
 });
 
 bot.onText(/\/tasks/, async (msg) => {
-  const db = loadDB();
-  const openTasks = db.tasks.filter(t => t.status !== 'done');
-  await sendTaskList(msg.chat.id, openTasks, `📋 *Ochiq vazifalar — ${openTasks.length} ta:*`);
+  const db = await loadDB();
+  const open = db.tasks.filter(t => t.status !== 'done');
+  await sendTaskList(msg.chat.id, open, `📋 *Ochiq vazifalar — ${open.length} ta:*`);
 });
 
 bot.onText(/\/done/, async (msg) => {
   const chatId = msg.chat.id;
-  const db = loadDB();
+  const db = await loadDB();
   const done = db.tasks.filter(t => t.status === 'done');
   if (done.length === 0) return bot.sendMessage(chatId, 'Hali hech qanday vazifa tugallanmagan.');
-  const lines = done.map((t, i) => `✅ *${i + 1}. ${t.title}*\n   ⏰ ${t.due || '—'}`).join('\n\n');
+  const lines = done.map((t, i) => `✅ *${i+1}. ${t.title}*\n   ⏰ ${t.due || '—'}`).join('\n\n');
   bot.sendMessage(chatId, `✅ *Tugagan vazifalar — ${done.length} ta:*\n\n${lines}`, {
-    parse_mode: 'Markdown',
-    reply_markup: DASHBOARD_BTN,
+    parse_mode: 'Markdown', reply_markup: DASHBOARD_BTN,
   });
 });
 
-bot.onText(/\/finance/, (msg) => sendFinanceSummary(msg.chat.id));
+bot.onText(/\/finance/, async (msg) => sendFinanceSummary(msg.chat.id));
 
-// ==== INLINE BUTTONS ====
+// ============================================================
+// INLINE BUTTONS
+// ============================================================
 bot.on('callback_query', async (query) => {
   const { data, message } = query;
   const chatId = message.chat.id;
   const msgId  = message.message_id;
-  const db = loadDB();
+  const db = await loadDB();
 
   if (data.startsWith('done_')) {
     const task = db.tasks.find(t => t.id === parseInt(data.slice(5)));
     if (task) {
       task.status = 'done'; task.overdue = false;
-      saveDB(db);
+      await saveDB(db);
       await bot.answerCallbackQuery(query.id, { text: '✅ Bajarildi!' });
       await bot.editMessageText(`✅ *${task.title}* — bajarildi!`,
         { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
@@ -315,21 +354,21 @@ bot.on('callback_query', async (query) => {
     const task = db.tasks.find(t => t.id === parseInt(data.slice(5)));
     if (task) {
       task.status = 'in_progress';
-      saveDB(db);
+      await saveDB(db);
       await bot.answerCallbackQuery(query.id, { text: '🔄 Jarayonda!' });
       await bot.editMessageText(formatTaskCard(task, '→'), {
         chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: [[
           { text: '✅ Bajarildi', callback_data: `done_${task.id}` },
           { text: '🔄 Jarayonda', callback_data: `prog_${task.id}` },
-        ]]}
+        ]]},
       });
     }
   } else if (data.startsWith('undo_')) {
     const task = db.tasks.find(t => t.id === parseInt(data.slice(5)));
     if (task) {
       task.status = 'todo';
-      saveDB(db);
+      await saveDB(db);
       await bot.answerCallbackQuery(query.id, { text: '↩️ Qaytarildi!' });
       await bot.editMessageText(`↩️ *${task.title}* — qaytarildi`,
         { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
@@ -337,7 +376,9 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// ==== AI MESSAGE HANDLER ====
+// ============================================================
+// AI MESSAGE HANDLER
+// ============================================================
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   if (msg.text && msg.text.startsWith('/')) return;
@@ -361,34 +402,31 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, 'Kechirasiz, faqat matn yoki ovoz qabul qila olaman.');
     }
 
-    const dbCtx = loadDB();
-    const openTasks = dbCtx.tasks.filter(t => t.status !== 'done');
+    const db = await loadDB();
+    const openTasks = db.tasks.filter(t => t.status !== 'done');
 
     // Tasks context
-    let tasksCtx = "Ochiq vazifalar:\n";
+    let tasksCtx = 'Ochiq vazifalar:\n';
     if (openTasks.length === 0) tasksCtx += "Yo'q.\n";
-    openTasks.forEach((t, i) => { tasksCtx += `${i + 1}. ${t.title} (${t.due})\n`; });
+    openTasks.slice(0, 10).forEach((t, i) => { tasksCtx += `${i+1}. ${t.title} (${t.due})\n`; });
 
-    // Finance context — so'nggi 30 kun
+    // Finance context
     const cutoff = tashkentDate(30);
-    const recentTx = dbCtx.transactions.filter(t => t.date >= cutoff);
+    const recentTx = db.transactions.filter(t => t.date >= cutoff);
     const totalIn  = recentTx.filter(t => t.type === 'income').reduce((s, t) => s + (Number(t.amount) || 0), 0);
     const totalOut = recentTx.filter(t => t.type === 'expense').reduce((s, t) => s + (Number(t.amount) || 0), 0);
-    let financeCtx = `So'nggi 30 kunlik moliya: Kirim ${fmt(totalIn)} so'm, Chiqim ${fmt(totalOut)} so'm, Balans ${fmt(totalIn - totalOut)} so'm. Tranzaksiyalar soni: ${recentTx.length}.\n`;
+    let finCtx = `So'nggi 30 kun: Kirim ${fmt(totalIn)} so'm, Chiqim ${fmt(totalOut)} so'm, Balans ${fmt(totalIn - totalOut)} so'm (${recentTx.length} ta tranzaksiya)\n`;
     recentTx.slice(0, 5).forEach(tx => {
-      financeCtx += `${tx.type === 'income' ? '+' : '-'} ${tx.title}: ${fmt(tx.amount)} so'm (${tx.date})\n`;
+      finCtx += `${tx.type === 'income' ? '+' : '-'} ${tx.title}: ${fmt(tx.amount)} so'm (${tx.date})\n`;
     });
 
-    // Toshkent datetime
+    // Toshkent time
     const nowTZ = new Date(Date.now() + 5 * 60 * 60 * 1000);
     const pad = n => String(n).padStart(2, '0');
-    const todayStr = `${nowTZ.getUTCFullYear()}-${pad(nowTZ.getUTCMonth() + 1)}-${pad(nowTZ.getUTCDate())}`;
-    const timeStr  = `${pad(nowTZ.getUTCHours())}:${pad(nowTZ.getUTCMinutes())}`;
-    const days = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
-    const tomorrowStr = (() => {
-      const t = new Date(nowTZ); t.setUTCDate(t.getUTCDate() + 1);
-      return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
-    })();
+    const todayStr    = `${nowTZ.getUTCFullYear()}-${pad(nowTZ.getUTCMonth()+1)}-${pad(nowTZ.getUTCDate())}`;
+    const timeStr     = `${pad(nowTZ.getUTCHours())}:${pad(nowTZ.getUTCMinutes())}`;
+    const tomorrowStr = (() => { const t = new Date(nowTZ); t.setUTCDate(t.getUTCDate()+1); return `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}`; })();
+    const days = ['Yakshanba','Dushanba','Seshanba','Chorshanba','Payshanba','Juma','Shanba'];
 
     const completion = await groq.chat.completions.create({
       messages: [
@@ -398,7 +436,7 @@ bot.on('message', async (msg) => {
             `Siz aqlli shaxsiy assistent bo'tsiz. Javob faqat JSON.\n\n` +
             `🕐 Hozir: ${todayStr} ${timeStr} (Toshkent UTC+5), ${days[nowTZ.getUTCDay()]}\n` +
             `Bugun=${todayStr}, Ertaga=${tomorrowStr}\n\n` +
-            `${tasksCtx}\n${financeCtx}\n${JSON_SCHEMA}`,
+            `${tasksCtx}\n${finCtx}\n${JSON_SCHEMA}`,
         },
         { role: 'user', content: userText },
       ],
@@ -407,7 +445,6 @@ bot.on('message', async (msg) => {
     });
 
     const parsed = JSON.parse(completion.choices[0].message.content);
-    const db = loadDB();
     const today = tashkentDate();
 
     if (parsed.action === 'ADD_TASK') {
@@ -421,8 +458,10 @@ bot.on('message', async (msg) => {
         nextAction: '',
         overdue: false,
       };
-      db.tasks.unshift(newTask);
-      saveDB(db);
+      // Reload DB fresh before modifying (avoid overwrites)
+      const freshDb = await loadDB();
+      freshDb.tasks.unshift(newTask);
+      await saveDB(freshDb);
       await bot.sendMessage(chatId, parsed.reply);
       await bot.sendMessage(chatId, formatTaskCard(newTask, '🆕'), {
         parse_mode: 'Markdown',
@@ -443,9 +482,13 @@ bot.on('message', async (msg) => {
         date: today,
         wallet: 'Naqd',
       };
-      db.transactions.unshift(newTx);
-      saveDB(db);
-      await bot.sendMessage(chatId, parsed.reply);
+      const freshDb = await loadDB();
+      freshDb.transactions.unshift(newTx);
+      await saveDB(freshDb);
+      await bot.sendMessage(chatId,
+        `${parsed.reply}\n\n➖ *${newTx.title}*: ${fmt(newTx.amount)} so'm\n📂 ${newTx.category}`,
+        { parse_mode: 'Markdown' }
+      );
 
     } else if (parsed.action === 'ADD_INCOME') {
       const newTx = {
@@ -458,45 +501,44 @@ bot.on('message', async (msg) => {
         date: today,
         wallet: 'Naqd',
       };
-      db.transactions.unshift(newTx);
-      saveDB(db);
-      await bot.sendMessage(chatId, parsed.reply);
+      const freshDb = await loadDB();
+      freshDb.transactions.unshift(newTx);
+      await saveDB(freshDb);
+      await bot.sendMessage(chatId,
+        `${parsed.reply}\n\n➕ *${newTx.title}*: ${fmt(newTx.amount)} so'm\n📂 ${newTx.category}`,
+        { parse_mode: 'Markdown' }
+      );
 
     } else {
       // CHAT
       await bot.sendMessage(chatId, parsed.reply);
 
-      // Vazifalar so'ralsa
-      const taskKw = ['vazifa', 'task', 'ishlar', 'reja', 'todo', 'deadline', 'ishim', 'nima qilish'];
+      const taskKw = ['vazifa', 'task', 'ishlar', 'reja', 'todo', 'deadline', 'ishim'];
       if (taskKw.some(k => userText.toLowerCase().includes(k)) && openTasks.length > 0) {
-        await sendTaskList(chatId, openTasks, `📋 *Sizning ${openTasks.length} ta ochiq vazifangiz:*`);
+        await sendTaskList(chatId, openTasks, `📋 *${openTasks.length} ta ochiq vazifangiz:*`);
       }
-
-      // Moliya so'ralsa
-      const finKw = ['moliya', 'pul', 'kirim', 'chiqim', 'balans', 'xarajat', 'daromad', 'maosh', 'finance', 'necha pul', 'qancha pul'];
+      const finKw = ['moliya', 'pul', 'kirim', 'chiqim', 'balans', 'xarajat', 'daromad', 'maosh', 'hisobot', 'necha pul', 'qancha'];
       if (finKw.some(k => userText.toLowerCase().includes(k))) {
-        sendFinanceSummary(chatId);
+        await sendFinanceSummary(chatId);
       }
     }
 
   } catch (error) {
     console.error('Bot Error:', error);
-    bot.sendMessage(chatId, 'Xatolik yuz berdi: ' + error.message);
+    bot.sendMessage(chatId, 'Xatolik: ' + error.message);
   }
 });
 
-// Catch-all: serve React app
+// ============================================================
+// CATCH-ALL → React app
+// ============================================================
 app.get('/{*splat}', (req, res) => {
   const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath);
-  } else {
-    res.status(404).send('Frontend not built. Run npm run build first.');
-  }
+  if (fs.existsSync(indexPath)) res.sendFile(indexPath);
+  else res.status(404).send('Frontend not built.');
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Telegram bot with Groq AI is running...`);
+  console.log(`Server on port ${PORT} | JSONBin: ${USE_JSONBIN ? 'ON' : 'OFF (local file)'}`);
 });
