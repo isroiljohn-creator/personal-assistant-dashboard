@@ -49,6 +49,8 @@ async function initDB() {
         id   INTEGER PRIMARY KEY DEFAULT 1,
         data JSONB   NOT NULL
       );
+    `);
+    await pool.query(`
       INSERT INTO app_data (id, data)
       VALUES (1, $1::jsonb)
       ON CONFLICT (id) DO NOTHING;
