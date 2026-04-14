@@ -164,6 +164,19 @@ async function sendTaskList(chatId, tasks, header) {
 }
 
 // ==== FINANCE HELPERS ====
+function groupByCategory(txList) {
+  return txList.reduce((acc, tx) => {
+    const cat = tx.category || 'Boshqa';
+    acc[cat] = (acc[cat] || 0) + (Number(tx.amount) || 0);
+    return acc;
+  }, {});
+}
+
+function barChart(amount, total) {
+  const pct = total > 0 ? Math.round((amount / total) * 10) : 0;
+  return '█'.repeat(pct) + '░'.repeat(10 - pct);
+}
+
 function sendFinanceSummary(chatId) {
   const db = loadDB();
   const cutoff = tashkentDate(30);
@@ -179,25 +192,69 @@ function sendFinanceSummary(chatId) {
 
   const income  = recentTx.filter(t => t.type === 'income');
   const expense = recentTx.filter(t => t.type === 'expense');
-  const totalIn  = income.reduce((s, t)  => s + (Number(t.amount) || 0), 0);
+  const totalIn  = income.reduce((s, t) => s + (Number(t.amount) || 0), 0);
   const totalOut = expense.reduce((s, t) => s + (Number(t.amount) || 0), 0);
   const balance  = totalIn - totalOut;
+  const savingsPct = totalIn > 0 ? Math.round((balance / totalIn) * 100) : 0;
 
-  let text = `💰 *So'nggi 30 kunlik moliya:*\n\n`;
-  text += `➕ Kirim:   *${fmt(totalIn)} so'm*\n`;
-  text += `➖ Chiqim: *${fmt(totalOut)} so'm*\n`;
-  text += `${balance >= 0 ? '📈' : '📉'} Balans:  *${fmt(balance)} so'm*\n\n`;
+  // Category breakdowns
+  const incCats = groupByCategory(income);
+  const expCats = groupByCategory(expense);
 
-  if (recentTx.length > 0) {
-    text += `📋 *So'nggi ${Math.min(recentTx.length, 7)} ta:*\n`;
-    recentTx.slice(0, 7).forEach(tx => {
-      const sign = tx.type === 'income' ? '➕' : '➖';
-      text += `${sign} ${tx.title} — ${fmt(tx.amount)} so'm  _(${tx.date})_\n`;
+  let text = `💰 *So'nggi 30 kunlik moliya hisoboti*\n`;
+  text += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  // Umumiy holat
+  text += `📊 *Umumiy holat:*\n`;
+  text += `➕ Kirim:    *${fmt(totalIn)} so'm*\n`;
+  text += `➖ Chiqim:  *${fmt(totalOut)} so'm*\n`;
+  text += `${balance >= 0 ? '📈' : '📉'} Balans:   *${fmt(balance)} so'm*\n`;
+  if (totalIn > 0) {
+    text += `💾 Tejash:  *${savingsPct}%* ${savingsPct >= 20 ? '✅' : savingsPct >= 10 ? '⚠️' : '🔴'}\n`;
+  }
+  text += '\n';
+
+  // Kirim toifalari
+  if (income.length > 0) {
+    text += `➕ *Kirim toifalari:*\n`;
+    const sortedIn = Object.entries(incCats).sort((a, b) => b[1] - a[1]);
+    sortedIn.forEach(([cat, amount]) => {
+      const pct = Math.round((amount / totalIn) * 100);
+      text += `  ${barChart(amount, totalIn)} ${cat}\n`;
+      text += `  ${fmt(amount)} so'm (${pct}%)\n`;
     });
+    text += '\n';
+  }
+
+  // Chiqim toifalari
+  if (expense.length > 0) {
+    text += `➖ *Chiqim toifalari:*\n`;
+    const sortedExp = Object.entries(expCats).sort((a, b) => b[1] - a[1]);
+    sortedExp.forEach(([cat, amount]) => {
+      const pct = Math.round((amount / totalOut) * 100);
+      text += `  ${barChart(amount, totalOut)} ${cat}\n`;
+      text += `  ${fmt(amount)} so'm (${pct}%)\n`;
+    });
+    text += '\n';
+  }
+
+  // Aqlli maslahat
+  text += `💡 *Maslahat:*\n`;
+  if (balance < 0) {
+    const topExp = Object.entries(expCats).sort((a, b) => b[1] - a[1])[0];
+    text += `Siz bu oy ${fmt(Math.abs(balance))} so'm zarar ko'rdingiz. `;
+    if (topExp) text += `Eng ko'p xarajat: *${topExp[0]}* (${fmt(topExp[1])} so'm).`;
+  } else if (savingsPct >= 20) {
+    text += `Ajoyib! Daromadingizning ${savingsPct}% ini tejadingiz. 🎉`;
+  } else if (savingsPct >= 10) {
+    text += `Yaxshi holat, lekin tejashni yana oshirishingiz mumkin. Maqsad: 20%.`;
+  } else {
+    text += `Kirimingizning atigi ${savingsPct}% tejaldi. Chiqimlarni kamaytiring!`;
   }
 
   bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: DASHBOARD_BTN });
 }
+
 
 // ==== BOT COMMANDS ====
 bot.onText(/\/start/, (msg) => {
