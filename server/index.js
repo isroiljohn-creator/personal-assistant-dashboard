@@ -103,7 +103,7 @@ app.get('/api/data', async (req, res) => {
       id: i + 1,
       name,
       balance: balances[name],
-      currency: 'UZS' // Or derive based on transactions if needed
+      currency: 'UZS'
     }));
   } else {
     db.wallets = [
@@ -111,6 +111,11 @@ app.get('/api/data', async (req, res) => {
       { id: 2, name: 'Karta', balance: 0, currency: 'UZS' }
     ];
   }
+  
+  // PREVENT ALL CACHING (Crucial for Telegram Mini Apps & Safari)
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   
   res.json(db);
 });
