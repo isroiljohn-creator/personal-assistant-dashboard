@@ -87,7 +87,32 @@ async function saveDB(data) {
 // REST APIs
 // ============================================================
 app.get('/api/data', async (req, res) => {
-  res.json(await loadDB());
+  const db = await loadDB();
+  const balances = {};
+  
+  db.transactions.forEach(tx => {
+    const w = tx.wallet || 'Naqd';
+    if (balances[w] === undefined) balances[w] = 0;
+    if (tx.type === 'income') balances[w] += Number(tx.amount) || 0;
+    else if (tx.type === 'expense') balances[w] -= Number(tx.amount) || 0;
+  });
+
+  const walletNames = Object.keys(balances);
+  if (walletNames.length > 0) {
+    db.wallets = walletNames.map((name, i) => ({
+      id: i + 1,
+      name,
+      balance: balances[name],
+      currency: 'UZS' // Or derive based on transactions if needed
+    }));
+  } else {
+    db.wallets = [
+      { id: 1, name: 'Naqd', balance: 0, currency: 'UZS' },
+      { id: 2, name: 'Karta', balance: 0, currency: 'UZS' }
+    ];
+  }
+  
+  res.json(db);
 });
 
 app.post('/api/tasks', async (req, res) => {
